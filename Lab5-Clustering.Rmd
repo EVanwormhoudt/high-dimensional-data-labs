@@ -1,0 +1,185 @@
+---
+title: "Lab 5: Clustering"
+subtitle: "High Dimensional Data Analysis practicals"
+author: "Milan Malfait"
+date: "24 Feb 2022 <br/> (Last updated: 2022-02-22)"
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.show = "hold"
+)
+
+options(width = 80)
+```
+
+### [Change log](https://github.com/statOmics/HDDA/commits/master/Lab6-Clustering.Rmd) {.unnumbered}
+
+------------------------------------------------------------------------
+
+```{r libraries, message=FALSE, warning=FALSE}
+## Install necessary packages with:
+
+library(mclust)
+library(gclus)  # contains the 'wine' data
+library(ggbiplot)
+library(GGally)
+library(tidyverse)
+
+theme_set(theme_minimal())
+```
+
+# The wine data
+
+In this lab session, we will explore the [`wine`](https://rdrr.io/cran/gclus/man/wine.html) data, following the example analysis from [Scrucca *et al.* (2016)](https://svn.r-project.org/Rjournal/html/archive/2016/RJ-2016-021/RJ-2016-021.pdf).
+
+This dataset provides 13 measurements obtained from a chemical analysis of 178 wines grown in the same region in Italy but derived from three different cultivars (Barolo, Grignolino, Barbera). The original cultivar labels are provided in the dataset.
+
+We will apply different clustering algorithms and validate them by comparing how well the clusters capture the original classes.
+
+```{r}
+data("wine", package = "gclus")
+class <- factor(wine$Class, levels = 1:3, labels = c("Barolo", "Grignolino", "Barbera"))
+table(class)
+
+X <- as.matrix(wine[, -1])
+summary(X)
+```
+
+# Hierarchical clustering
+
+### Tasks {.unnumbered}
+
+#### 1. Perform hierarhical clustering of the wine data, using a Euclidean distance matrix and the complete-linkage algorithm (see `?hclust`). Plot the clustering *dendrogram*. {.unnumbered}
+
+```{r}
+dist_X = dist(X)
+hc = hclust(dist_X, method = "mcquitty", members = NULL)
+
+plot(hc,labels = FALSE)
+
+```
+
+#### 2. Select an appropriate number of clusters from the hierarchical clustering (see `?cutree`). Visualize the clusters on a PCA biplot and compare with the original labels. {.unnumbered}
+
+```{r}
+hc_clusters <- cutree(hc, k = 4)
+table(class, hc_clusters)
+```
+
+```{r}
+X_pca = prcomp(X,center=TRUE,scale=TRUE)
+ggbiplot(X_pca,groups = hc_clusters)
+ggbiplot(X_pca,groups = wine$Class)
+```
+
+#### Bonus: can you improve the results by using different distance metrics or linkages? {.unnumbered}
+
+# Model-based clustering
+
+### Tasks {.unnumbered}
+
+#### 1. Perform model-based clustering on the `wine` data (use [`mclust::Mclust()`](https://rdrr.io/cran/mclust/man/Mclust.html)). Plot the BIC values and interpret the results. Compare the identified clusters with the original (true) labels.   {.unnumbered}
+
+```{r}
+mc_lust_clusters = Mclust(X)
+
+```
+
+```{r}
+plot(mc_lust_clusters, what = "BIC", ylim = range(mc_lust_clusters$BIC[, -(1:2)], na.rm = TRUE),
+  legendArgs = list(x = "bottomleft")
+)
+plot(mc_lust_clusters, what = "classification")
+```
+
+\
+
+#### 2. Visualize the clusters found by `Mclust()` on the PCA biplot. Compare with the original labels.  {.unnumbered}
+
+```{r}
+
+mc_clusters = Mclust(X,G=3)
+X_pca = prcomp(X,center=TRUE,scale=TRUE)
+ggbiplot(X_pca,groups = mc_clusters$classification)
+ggbiplot(X_pca,groups = wine$Class)
+
+
+
+```
+
+#### 3. Perform a dimensionality reduction of the wine data using the PCA. Select an appropriate number of PC's. Redo the clustering on this reduced dimension representation and make the same figures as before. How do the results differ? {.unnumbered}
+
+```{r, child="_session-info.Rmd"}
+
+X_pca = prcomp(X,center=TRUE,scale=TRUE)
+
+tot_var <- sum(X_pca$sdev^2)
+
+## Create data.frame of the proportion of variance explained by each PC
+X_prop_var <- data.frame(
+  PC = 1:ncol(X_pca$x),
+  var = X_pca$sdev^2
+) %>%
+  ## Using `mutate` to calculate prop. var and cum. prop. var
+  mutate(
+    prop_var = var / tot_var,
+    cum_prop_var = cumsum(var / tot_var)
+  )
+
+ggplot(X_prop_var, aes(PC, prop_var)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = 2.5, col = "firebrick") +
+  scale_x_continuous(breaks = 1:ncol(X_pca$x)) +
+  labs(y = "Proportion of variance") +
+  ggtitle("Proportion of variance explained by each PC",
+          subtitle = "Wine data")
+
+
+```
+
+```{r}
+ggplot(X_prop_var, aes(PC, cum_prop_var)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = 2.5, col = "firebrick") +
+  scale_x_continuous(breaks = 1:ncol(X_pca$x)) +
+  labs(y = "Proportion of variance") +
+  ggtitle("Cumulative proportion of variance explained by each PC",
+          subtitle = "Wine data")
+```
+
+```{r}
+
+
+new_X = X_pca$x[,1:7]
+
+mc_clusters = Mclust(new_X)
+
+
+plot(mc_clusters, what = "BIC", ylim = range(mc_clusters$BIC[, -(1:2)], na.rm = TRUE),
+  legendArgs = list(x = "bottomleft")
+)
+plot(mc_clusters, what = "classification")
+```
+
+```{r}
+
+mc_clusters = Mclust(new_X,G=4)
+X_pca = prcomp(X,center=TRUE,scale=TRUE)
+ggbiplot(X_pca,groups = mc_clusters$classification)
+ggbiplot(X_pca,groups = wine$Class)
+```
+
+```{r}
+
+df <- as.data.frame(new_X)
+df$clusters <- mc_clusters
+
+ggscatmat(df, columns = 1:k, color = "clusters") +
+  theme(legend.position = "bottom", aspect.ratio = 0.6) +
+  scale_color_brewer(palette = "Set2", name = "mclust-PCA clusters")
+```

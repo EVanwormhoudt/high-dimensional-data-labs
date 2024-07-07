@@ -1,0 +1,400 @@
+---
+title: "hdda-project"
+output: html_document
+date: "2023-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Question 1
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggcorrplot)
+library(caret)
+library(glmnet)
+
+load("breastCancerNKI.RData")
+dim(X)
+
+
+
+
+```
+
+```{r}
+table(Y) # number of 0's (ER-) and 1's (ER+)
+```
+
+```{r}
+
+breast_cancer_pca <- prcomp(X, scale = TRUE)
+
+tot_var <- sum(breast_cancer_pca$sdev^2)
+
+## Create data.frame of the proportion of variance explained by each PC
+breast_cancer_prop_var <- data.frame(
+  PC = 1:ncol(breast_cancer_pca$x),
+  var = breast_cancer_pca$sdev^2
+) %>%  mutate(
+prop_var = var / tot_var,
+    cum_prop_var = cumsum(var / tot_var)
+  )
+
+head(breast_cancer_prop_var)
+ggplot(breast_cancer_prop_var, aes(PC, prop_var)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = 2.5, col = "firebrick") +
+  scale_x_continuous(breaks = 1:ncol(breast_cancer_pca$x)) +
+  labs(y = "Proportion of variance") 
+  
+
+
+
+```
+
+```{r}
+ggplot(breast_cancer_prop_var, aes(PC, cum_prop_var)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = 1:ncol(breast_cancer_pca$x)) +
+  labs(y = "Proportion of variance") +
+  ggtitle("Cumulative proportion of variance explained by each PC",
+          subtitle = "Breast cancer data")
+```
+
+```{r}
+pca_df <- data.frame(breast_cancer_pca$x, ER = Y)
+ggplot(pca_df, aes(x = PC1, y = PC2, color = as.factor(ER))) + 
+  geom_point() + 
+  labs(title = "PCA of Gene Expression Data", x = "PC1", y = "PC2", color = "ER Status")
+
+```
+
+```{r}
+# Pairwise plots for selected genes
+selected_genes <- X[,1:10]
+pairs(selected_genes, col = as.numeric(Y) + 1)
+
+
+```
+
+```{r}
+boxplot(X[,1:10] ~ as.factor(Y), 
+        main = "Expression of Selected Genes across ER Status",
+        xlab = "ER Status", ylab = "Gene Expression Level")
+```
+
+```{r}
+
+
+set.seed(123) # for reproducibility
+data_split <- createDataPartition(Y, p = 0.7, list = FALSE)
+train_data <- X[data_split, ]
+test_data <- X[-data_split, ]
+train_labels <- Y[data_split]
+test_labels <- Y[-data_split]
+
+train_dataframe <- as.data.frame(train_data)
+train_dataframe$labels <- as.factor(train_labels) 
+
+test_dataframe <- as.data.frame(test_data)
+test_dataframe$labels <- as.factor(test_labels)
+
+```
+
+```{r}
+
+library(pls)
+
+K <- 20
+
+pcr_cv <- pcr(train_labels ~ ., data = train_dataframe, validation = "CV", segments = K)
+plot(pcr_cv, plottype = "validation")
+
+
+optimal_ncomp <- selectNcomp(pcr_cv, method = "onesigma", plot = TRUE)
+```
+
+```{r}
+ 
+cv_ridge <- cv.glmnet(train_data, train_labels, alpha = 0, family = "binomial")
+cv_lasso <- cv.glmnet(train_data, train_labels, alpha = 1, family = "binomial")
+
+cv_ridge$lambda.1se
+cv_lasso$lambda.1se
+```
+
+\
+
+```{r}
+
+
+ridge_preds <- ifelse(predict(cv_ridge, s = cv_ridge$lambda.1se, newx = test_data)>0.5,1,0)
+lasso_preds <- ifelse(predict(cv_lasso, s = cv_lasso$lambda.1se, newx = test_data)>0.5,1,0)
+
+pcr_model_opt <- pcr(train_labels ~ ., data = train_dataframe, ncomp = optimal_ncomp)
+
+pcr_preds <- ifelse(predict(pcr_model_opt, newdata = test_dataframe)>0.5,1,0)
+
+
+
+```
+
+```{r}
+error_rate <- function(predictions, true_values) {
+  mean(predictions != true_values)
+}
+print(error_rate(test_labels,ridge_preds))
+print(error_rate(test_labels,lasso_preds))
+print(error_rate(test_labels,pcr_preds))
+
+
+```
+
+```{r}
+
+library(locfdr)
+
+group <- Y
+
+
+p_values <- apply(X, 2, function(row) {
+  t.test(row[Y == 0], row[Y == 1])$p.value
+})
+
+
+
+p_adjusted_global <- p.adjust(p_values, method = "BH") 
+significant_global <- which(p_adjusted_global < 0.05)
+
+
+z_scores <- qnorm(p_values/2, lower.tail = FALSE)
+fdr_results <- locfdr(z_scores)
+significant_local <- which(fdr_results$fdr < 0.20)
+
+
+
+
+
+
+
+
+```
+
+```{r}
+
+summary(p_values)
+```
+
+# **Question 2**
+
+```{r}
+load("dpcr_HIV.RData")
+head(HIV_data)
+plot(x=HIV_data[,1],y=HIV_data[,2],col=factor(HIV_data[,3]),xlab='channel 1',ylab='channel 2')
+```
+
+-   How does the clustering result look like compared to the ground truth? You may run the algorithms several times to observe the results (don't forget to change the seed).
+
+Let's first code our EM algorithm
+
+```{r}
+
+library(mvtnorm)
+
+eps=10^(-6)  ## the stopping criteria
+max_iter=1000
+l_obs=NULL
+cluster_num=4  ## the cluster number 
+n_obs=nrow(HIV_data)
+zi<-matrix(0,nrow=n_obs, ncol=cluster_num)
+
+max_values <- apply(HIV_data[, -3], 2, max)
+
+## we initialize muk, covk, pik
+set.seed(123)
+muk<-rbind(c(-0.35,-0.21),matrix(runif((cluster_num-1) * 2),nrow = cluster_num-1, ncol = 2)* max_values)
+
+covk <- array(cov(HIV_data[,-3]), dim = c(2, 2, cluster_num))
+pik= rep(1/cluster_num, cluster_num)
+## we fix the centroid of the negative population
+mu_neg=c(-0.35,-0.21)
+
+set.seed(NULL)
+for (j in 1:max_iter) {
+  
+  ## E step
+  # Calculate the probability density for each point under each Gaussian distribution
+  for (k in 1:cluster_num) {
+    zi[, k] <- pik[k] * dmvnorm(HIV_data[, -3], mean = muk[k, ], sigma = covk[,,k])
+  }
+  zi <- zi / rowSums(zi) # Normalize the responsibilities
+  
+  ## M step:
+  nk <- colSums(zi)
+  pik <- nk / n_obs
+    for (k in 2:cluster_num) { # We skip the first cluster since it's fixed
+      muk[k, ] <- colSums(HIV_data[, -3] * zi[, k]) / nk[k]
+      covk[,,k] <- (t(HIV_data[, -3] - muk[k, ]) %*% (zi[, k] * (HIV_data[, -3] - muk[k, ]))) / nk[k]
+  }
+  
+  # Calculate the log likelihood for the current iteration
+  l_curr <- sum(log(rowSums(zi)))
+  
+  # Check for convergence
+  if (!is.null(l_obs) && abs(l_curr - l_obs)/l_obs < eps) {
+    break
+  }
+  l_obs <- l_curr
+    
+}
+
+
+
+
+```
+
+Using a fixed seed for initialization demonstrates that the EM algorithm's results are highly sensitive to the starting conditions. Specifically, when we employ a consistent seed at the initialization stage and allow stochasticity during the convergence process, the outcomes exhibit minimal variability. This consistency underscores the influence of the initial clusters on the ultimate clustering results.
+
+Conversely, if the seed is not set during the initialization phase but is applied during the convergence process, the results exhibit considerable variation. This pattern indicates that the initial positioning of clusters plays a pivotal role in the EM algorithm's performance. The divergence in outcomes due to different initial cluster assignments suggests that the algorithm might be converging to different local optima, depending on the starting configuration of the clusters.
+
+This behavior highlights the importance of the initialization step in the EM algorithm. To achieve stable and reliable results, careful attention must be given to the selection of initial parameters. Establishing a method for intelligent initialization could be crucial for enhancing the robustness and reliability of the clustering outcomes.
+
+```{r}
+library(ggplot2)
+
+# Assign each point to the cluster with the highest responsibility
+HIV_data_frame <- as.data.frame(HIV_data)
+
+HIV_data_frame$cluster <- apply(zi, 1, which.max)
+
+# Plot the data points with ggplot
+plot(HIV_data_frame[, 1], HIV_data_frame[, 2], col = HIV_data_frame$cluster)
+```
+
+Lets try to run the algorithm a 1000 time to see the Adjusted Rand Index to see the agreement between the algorithm and the ground truth\
+
+```{r}
+
+set.seed(NULL)
+results <- replicate(1000, {
+  eps=10^(-6)  ## the stopping criteria
+  max_iter=1000
+  l_obs=NULL
+  cluster_num=4  ## the cluster number 
+  n_obs=nrow(HIV_data)
+  zi<-matrix(0,nrow=n_obs, ncol=cluster_num)
+  
+  
+  muk<-rbind(c(-0.35,-0.21),matrix(runif((cluster_num-1) * 2),nrow = cluster_num-1, ncol = 2)* max_values)
+  covk <- array(cov(HIV_data[,-3]), dim = c(2, 2, cluster_num))
+  pik= rep(1/cluster_num, cluster_num)
+  ## we fix the centroid of the negative population
+  mu_neg=c(-0.35,-0.21)
+  
+  for (j in 1:max_iter) {
+    
+    ## E step
+    # Calculate the probability density for each point under each Gaussian distribution
+    for (k in 1:cluster_num) {
+      zi[, k] <- pik[k] * dmvnorm(HIV_data[, -3], mean = muk[k, ], sigma = covk[,,k])
+    }
+    zi <- zi / rowSums(zi) # Normalize the responsibilities
+    
+    ## M step:
+    nk <- colSums(zi)
+    pik <- nk / n_obs
+      for (k in 2:cluster_num) { # We skip the first cluster since it's fixed
+        muk[k, ] <- colSums(HIV_data[, -3] * zi[, k]) / nk[k]
+        covk[,,k] <- (t(HIV_data[, -3] - muk[k, ]) %*% (zi[, k] * (HIV_data[, -3] - muk[k, ]))) / nk[k]
+    }
+    
+    # Calculate the log likelihood for the current iteration
+    l_curr <- sum(log(rowSums(zi)))
+    
+    # Check for convergence
+    if (!is.null(l_obs) && abs(l_curr - l_obs)/l_obs < eps) {
+      break
+    }
+    l_obs <- l_curr
+      
+  }
+  predicted_labels <- apply(zi, 1, which.max)
+  
+  adjustedRandIndex(HIV_data[,3], predicted_labels)
+
+
+})
+
+
+```
+
+```{r}
+summary(results)
+
+```
+
+-   These statistics highlight a significant variability in the EM algorithm's performance, which is likely influenced by its sensitivity to initial parameter estimates. The lower quartile suggests that a substantial number of runs result in moderate clustering performance, which could be due to poor initialization or the algorithm converging to local optima that do not reflect the underlying cluster structure well.
+
+    The high median and mean ARIs suggest that the algorithm is capable of excellent performance, but achieving this consistently may require careful initialization, perhaps informed by domain knowledge or preprocessing steps such as smarter seed selection or pre-clustering.
+
+    To improve the robustness of the EM algorithm, one might consider strategies such as multiple random initialization using the results of a more stable clustering method (like k-means++), or employing techniques such as "soft" initialization that allow for some stochasticity in the early phases of clustering to avoid local optima.
+
+    In conclusion, while the EM algorithm shows potential for high accuracy in clustering, the initialization process plays a crucial role in its performance. Strategies for initialization and potentially refining the algorithm or model selection should be explored to enhance consistency and reliability of the clustering results.\
+
+Now lets compare with the Mclust function
+
+```{r}
+library(mclust)
+set.seed(NULL)
+
+mclust_model <- Mclust(HIV_data[, 1:2],G=4)
+
+
+
+HIV_data_frame_mclust <- as.data.frame(HIV_data[, 1:2])
+
+
+HIV_data_frame_mclust$mclust_cluster <- mclust_model$classification 
+
+
+plot(HIV_data_frame_mclust[, 1], HIV_data_frame_mclust[, 2], col = HIV_data_frame_mclust$mclust_cluster, 
+     main = "Mclust Clustering",
+     xlab = "Channel 1", ylab = "Channel 2")
+
+adjustedRandIndex(HIV_data[,3], mclust_model$classification )
+
+
+```
+
+When examining the clustering outcomes of the Mclust algorithm in comparison with our Expectation-Maximization (EM) implementation, both exhibit a high degree of similarity in their clustering patterns. However, Mclust demonstrates a marginally superior performance in most instances. Despite this, both algorithms encounter difficulties with the same subset of data points. Specifically, these points are situated in the region defined by 1 to 5 on Channel 2 and 2 to 10 on Channel 1.\
+This could be explained by the fact that McLust is an iterative algorithm that aim to maximize the likelihood or posterior probability. However, ir can converge to local maxima, which may not represent the global best solution for the given data.\
+Also, Mclust uses Gaussian mixture models, which assume that the data is generated from a combination of several Gaussian distributions. If the actual data distribution does not align well with this assumption, the algorithm may not perform optimally.
+
+Finally,he Mclust algorithm makes certain assumptions about the shape and covariance of the data it clusters. If the true clusters are not ellipsoidal or if their spread differs significantly from the model's assumptions, the algorithm may not capture the true structure, which would be the case for the points situated in the region defined by 1 to 5 on Channel 2 and 2 to 10 on Channel 1.\
+\
+Lets try to run the McLust agorithm 100 times to compare with our EM algorithm
+
+```{r}
+
+result_mclust <- replicate(100,{
+  mclust_model <- Mclust(HIV_data[, 1:2],G=4)
+  adjustedRandIndex(HIV_data[,3], mclust_model$classification )
+
+})
+```
+
+```{r}
+summary(result_mclust)
+```
+
+Upon reviewing the performance metrics of the Mclust algorithm as quantified by the Adjusted Rand Index (ARI), we observe that Mclust achieves a commendable degree of clustering accuracy. The ARI values span from a minimum of 0.9183 to a maximum of 1.0000, with both the median and the first quartile firmly established at 0.9184. This consistency suggests a robust clustering performance across different subsets of the data.
+
+Notably, Mclust outperforms our custom implementation of the EM algorithm. This superior performance can largely be attributed to the differences in the initialization phase of the clustering process. While our algorithm relies on a random uniform distribution for initialization, Mclust utilizes a more sophisticated hierarchical model-based agglomerative clustering approach. This advanced strategy likely contributes to a more accurate and stable convergence of cluster centers during the Mclust process.
+
+The summary statistics hint at a potential area of improvement for our EM algorithm. By enhancing the initialization step, perhaps by incorporating a more informed or structured approach akin to that of Mclust, we might achieve a higher and more consistent ARI, narrowing the performance gap observed between the two methodologies. This adjustment could lead to a clustering solution with results that mirror the reliability and precision demonstrated by Mclust.
